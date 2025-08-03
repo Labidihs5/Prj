@@ -1,0 +1,45 @@
+-- Schéma de base de données pour l'application CNAM
+CREATE TABLE IF NOT EXISTS fac (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ddeb DATE,
+    dfn DATE,
+    cleass TEXT,
+    annprc TEXT,
+    burreg TEXT,
+    numprc TEXT,
+    datfac DATE,
+    mntchiffre TEXT,
+    nom TEXT,
+    nombreseance INTEGER,
+    annee INTEGER,
+    numbor TEXT,
+    annfac INTEGER,
+    numfac TEXT,
+    nombre INTEGER,
+    puttc REAL,
+    mntht REAL,
+    mnttva REAL,
+    mnt REAL,
+    designation TEXT,
+    nombresemaine INTEGER,
+    assiette TEXT,
+    numass TEXT,
+    ind TEXT DEFAULT '0'
+);
+
+CREATE TABLE IF NOT EXISTS borderaux (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    annbor INTEGER,
+    numbor TEXT,
+    assoc TEXT,
+    bur TEXT,
+    pres TEXT,
+    numpac TEXT,
+    assocs TEXT,
+    nbrs INTEGER,
+    nbrg INTEGER,
+    mntg REAL,
+    mntht REAL,
+    tva REAL,
+    datfac DATE
+);

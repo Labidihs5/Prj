@@ -1,0 +1,15 @@
+{
+  "appId": "com.cnam.facturation",
+  "appName": "CNAM Facturation",
+  "webDir": "out",
+  "bundledWebRuntime": false,
+  "plugins": {
+    "Camera": {
+      "permissions": ["camera"]
+    }
+  },
+  "android": {
+    "allowMixedContent": true,
+    "minWebViewVersion": 60
+  }
+}
