@@ -7,20 +7,25 @@ import { Input } from "@/components/ui/input"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { Textarea } from "@/components/ui/textarea"
-import { CalendarIcon, Printer, QrCode, Save, Database, Plus, FileText } from "lucide-react"
+import { CalendarIcon, Printer, Save, Plus, FileText, RotateCcw, Settings, AlertTriangle } from "lucide-react"
 import { Calendar } from "@/components/ui/calendar"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
-import { PrintService } from "@/lib/print-service"
-import { GenerateDialog } from "@/components/generate-dialog"
-import { DatabaseManager } from "@/components/database-manager"
-import { QRScanner } from "@/components/qr-scanner"
-import { neon, type Facture } from "@/lib/database"
+import { PrintService } from "@/print-service"
+import { GenerateDialog } from "@/generate-dialog"
+import { QRScanner } from "@/qr-scanner"
+import { NeonConfig } from "@/neon-config"
+import { database, type Facture } from "@/lib/database"
+
+type AppState = "loading" | "config_required" | "ready" | "error"
 
 export default function CNAMApp() {
   const { toast } = useToast()
+  const [appState, setAppState] = useState<AppState>("loading")
+  const [initError, setInitError] = useState<string>("")
+  const [isInitialized, setIsInitialized] = useState(false)
+
   const [mode, setMode] = useState<"nouveau" | "modifier" | "supprimer" | "reactiver">("nouveau")
   const [facture, setFacture] = useState<Facture>({
     nom: "",
@@ -47,68 +52,86 @@ export default function CNAMApp() {
     dateCreation: new Date(),
     dateModification: new Date(),
   })
+
   const [showDatePicker, setShowDatePicker] = useState<string | null>(null)
   const [showDatabaseManager, setShowDatabaseManager] = useState(false)
   const [showQRScanner, setShowQRScanner] = useState(false)
   const [facturesNonGenerees, setFacturesNonGenerees] = useState<Facture[]>([])
 
+  // Initialisation unique au montage du composant
   useEffect(() => {
-    initializeFacture()
-    loadFacturesNonGenerees()
-  }, [])
+    let isMounted = true
 
-  const loadFacturesNonGenerees = async () => {
-    try {
-      const factures = await db.getFacturesNonGenerees()
-      setFacturesNonGenerees(factures)
-      console.log(`${factures.length} factures non générées trouvées`)
-    } catch (error) {
-      console.error("Erreur chargement factures non générées:", error)
-    }
-  }
+    const initApp = async () => {
+      if (isInitialized) return
 
-  const initializeFacture = async () => {
-    try {
-      // Nettoyer les doublons au démarrage
-      await db.cleanupDuplicateNumbers()
+      try {
+        console.log("🚀 Initializing CNAM App...")
+        setAppState("loading")
+        setInitError("")
 
-      const nextNumber = await db.getNextFactureNumber()
-      const prixDefaut = (await db.getParametre("prixUnitaireTTC")) || 11.5
-      const bureauDefaut = (await db.getParametre("bureauDefaut")) || "001"
+        // Initialiser la base de données
+        await database.init()
 
-      // Vérifier que le numéro est disponible avec plusieurs tentatives
-      let numeroFinal = nextNumber
-      let tentatives = 0
+        if (!isMounted) return
 
-      while (tentatives < 10) {
-        const isAvailable = await db.isFactureNumberAvailable(numeroFinal)
-        if (isAvailable) {
-          break
+        // Charger les données initiales
+        const factures = await database.getFacturesNonGenerees()
+        const nextNumber = await database.getNextFactureNumber()
+        const prixDefaut = Number.parseFloat((await database.getParametre("prixUnitaireTTC")) || "11.5")
+        const bureauDefaut = (await database.getParametre("bureauDefaut")) || "001"
+
+        if (!isMounted) return
+
+        setFacturesNonGenerees(factures)
+        setFacture((prev) => ({
+          ...prev,
+          numfac: nextNumber,
+          puttc: prixDefaut,
+          burreg: bureauDefaut,
+        }))
+
+        setAppState("ready")
+        setIsInitialized(true)
+
+        toast({
+          title: "Application prête",
+          description: "Connexion Neon Database établie avec succès",
+        })
+
+        console.log("✅ CNAM App initialized successfully")
+      } catch (error) {
+        console.error("❌ App initialization failed:", error)
+
+        if (!isMounted) return
+
+        const errorMessage = error instanceof Error ? error.message : "Erreur inconnue"
+        setInitError(errorMessage)
+
+        if (errorMessage.includes("connection") || errorMessage.includes("Database")) {
+          setAppState("config_required")
+          toast({
+            title: "Configuration requise",
+            description: "Veuillez configurer Neon Database",
+            variant: "destructive",
+          })
+        } else {
+          setAppState("error")
+          toast({
+            title: "Erreur d'initialisation",
+            description: errorMessage,
+            variant: "destructive",
+          })
         }
-
-        tentatives++
-        const anneeEnCours = new Date().getFullYear()
-        const sequence = await db.getNextSequenceForYear(anneeEnCours)
-        numeroFinal = `${sequence + tentatives}/${anneeEnCours}`
       }
-
-      setFacture((prev) => ({
-        ...prev,
-        numfac: numeroFinal,
-        puttc: prixDefaut,
-        burreg: bureauDefaut,
-      }))
-
-      console.log("Facture initialisée avec numéro:", numeroFinal)
-    } catch (error) {
-      console.error("Erreur initialisation:", error)
-      toast({
-        title: "Erreur",
-        description: "Impossible d'initialiser le numéro de facture",
-        variant: "destructive",
-      })
     }
-  }
+
+    initApp()
+
+    return () => {
+      isMounted = false
+    }
+  }, []) // Dépendance vide pour n'exécuter qu'une fois
 
   // Calculs automatiques
   useEffect(() => {
@@ -128,29 +151,40 @@ export default function CNAMApp() {
     }
   }, [facture.nombreseance, facture.nombresemaine, facture.puttc])
 
-  const convertirEnLettres = (montant: number): string => {
-    if (montant === 0) return "zéro"
+  const handleConfigurationComplete = async () => {
+    console.log("🔄 Configuration completed, restarting app...")
+    setIsInitialized(false)
+    setAppState("loading")
 
-    const entier = Math.floor(montant)
-    const millimes = Math.round((montant - entier) * 1000)
+    // Redémarrer l'initialisation
+    try {
+      await database.init()
+      const factures = await database.getFacturesNonGenerees()
+      const nextNumber = await database.getNextFactureNumber()
 
-    let resultat = ""
-    if (entier > 0) {
-      resultat += `${entier} dinars`
+      setFacturesNonGenerees(factures)
+      setFacture((prev) => ({ ...prev, numfac: nextNumber }))
+      setAppState("ready")
+      setIsInitialized(true)
+
+      toast({
+        title: "Configuration terminée",
+        description: "Application redémarrée avec succès",
+      })
+    } catch (error) {
+      console.error("Restart failed:", error)
+      setAppState("error")
+      setInitError(error instanceof Error ? error.message : "Erreur de redémarrage")
     }
-    if (millimes > 0) {
-      resultat += ` et ${millimes} millimes`
-    }
-
-    return resultat
   }
 
-  const formatDate = (date: Date): string => {
-    return date.toLocaleDateString("fr-FR", {
-      day: "2-digit",
-      month: "2-digit",
-      year: "numeric",
-    })
+  const loadFacturesNonGenerees = async () => {
+    try {
+      const factures = await database.getFacturesNonGenerees()
+      setFacturesNonGenerees(factures)
+    } catch (error) {
+      console.error("Error loading factures:", error)
+    }
   }
 
   const sauvegarder = async () => {
@@ -165,41 +199,12 @@ export default function CNAMApp() {
 
     try {
       if (mode === "nouveau") {
-        // Vérifier plusieurs fois que le numéro est disponible
-        let tentatives = 0
-        let numeroDisponible = false
-        let numeroActuel = facture.numfac
+        const numeroReserve = await database.reserveFactureNumber()
+        const factureComplete = await database.saveFacture({
+          ...facture,
+          numfac: numeroReserve,
+        })
 
-        while (!numeroDisponible && tentatives < 5) {
-          const isAvailable = await db.isFactureNumberAvailable(numeroActuel)
-          if (isAvailable) {
-            numeroDisponible = true
-            break
-          }
-
-          // Générer un nouveau numéro
-          tentatives++
-          console.log(`Tentative ${tentatives}: Numéro ${numeroActuel} occupé, génération d'un nouveau...`)
-
-          const anneeEnCours = new Date().getFullYear()
-          const nextSequence = await db.getNextSequenceForYear(anneeEnCours)
-          numeroActuel = `${nextSequence + tentatives}/${anneeEnCours}`
-        }
-
-        if (!numeroDisponible) {
-          throw new Error("Impossible de générer un numéro de facture unique après plusieurs tentatives")
-        }
-
-        // Mettre à jour le numéro si nécessaire
-        if (numeroActuel !== facture.numfac) {
-          setFacture((prev) => ({ ...prev, numfac: numeroActuel }))
-          toast({
-            title: "Numéro modifié",
-            description: `Nouveau numéro assigné: ${numeroActuel}`,
-          })
-        }
-
-        const factureComplete = await db.saveFacture({ ...facture, numfac: numeroActuel })
         setFacture(factureComplete)
         await loadFacturesNonGenerees()
 
@@ -208,105 +213,27 @@ export default function CNAMApp() {
           description: `Facture ${factureComplete.numfac} ajoutée avec succès`,
         })
 
-        // NOUVEAU: Préparer automatiquement la prochaine facture
-        await prepareNextFacture()
-      } else if (mode === "modifier" && facture.id) {
-        const factureModifiee = await db.updateFacture(facture)
-        setFacture(factureModifiee)
-        await loadFacturesNonGenerees()
-
-        toast({
-          title: "Succès",
-          description: `Facture ${factureModifiee.numfac} modifiée avec succès`,
-        })
+        // Préparer la prochaine facture
+        const nextNumber = await database.getNextFactureNumber()
+        setFacture((prev) => ({
+          ...prev,
+          id: undefined,
+          nom: "",
+          designation: "",
+          nombreseance: 0,
+          nombresemaine: 0,
+          numfac: nextNumber,
+          numass: "",
+          annprc: "",
+          numprc: "",
+          cleass: "",
+        }))
       }
     } catch (error) {
-      console.error("Erreur sauvegarde:", error)
-
-      let errorMessage = "Impossible de sauvegarder la facture"
-      if (error instanceof Error) {
-        if (error.message.includes("existe déjà")) {
-          errorMessage = `Le numéro ${facture.numfac} existe déjà. Génération d'un nouveau numéro...`
-          // Réessayer avec un nouveau numéro
-          setTimeout(() => {
-            initializeFacture()
-          }, 1000)
-        } else {
-          errorMessage = error.message
-        }
-      }
-
+      console.error("Save error:", error)
       toast({
         title: "Erreur",
-        description: errorMessage,
-        variant: "destructive",
-      })
-    }
-  }
-
-  const prepareNextFacture = async () => {
-    try {
-      console.log("=== PRÉPARATION PROCHAINE FACTURE ===")
-
-      // Générer le prochain numéro de facture
-      const nextNumber = await db.getNextFactureNumber()
-      const prixDefaut = (await db.getParametre("prixUnitaireTTC")) || 11.5
-      const bureauDefaut = (await db.getParametre("bureauDefaut")) || "001"
-
-      // Vérifier que le numéro est disponible
-      let numeroFinal = nextNumber
-      let tentatives = 0
-
-      while (tentatives < 5) {
-        const isAvailable = await db.isFactureNumberAvailable(numeroFinal)
-        if (isAvailable) {
-          break
-        }
-
-        tentatives++
-        const anneeEnCours = new Date().getFullYear()
-        const sequence = await db.getNextSequenceForYear(anneeEnCours)
-        numeroFinal = `${sequence + tentatives}/${anneeEnCours}`
-      }
-
-      // Réinitialiser le formulaire avec le nouveau numéro
-      setFacture({
-        nom: "",
-        designation: "",
-        nombreseance: 0,
-        nombresemaine: 0,
-        nombre: 0,
-        puttc: prixDefaut,
-        mntht: 0,
-        mnttva: 0,
-        mnt: 0,
-        numass: "",
-        annprc: "",
-        numprc: "",
-        burreg: bureauDefaut,
-        cleass: "",
-        datfac: new Date(),
-        ddeb: new Date(),
-        dfn: new Date(),
-        numfac: numeroFinal,
-        annee: new Date().getFullYear(),
-        ind: "0",
-        generated: "0",
-        dateCreation: new Date(),
-        dateModification: new Date(),
-      })
-
-      console.log("Prochaine facture préparée avec numéro:", numeroFinal)
-
-      toast({
-        title: "Prêt pour la suivante",
-        description: `Formulaire préparé pour facture N° ${numeroFinal}`,
-      })
-    } catch (error) {
-      console.error("Erreur préparation prochaine facture:", error)
-      toast({
-        title: "Attention",
-        description: "Erreur lors de la préparation de la prochaine facture",
+        description: error instanceof Error ? error.message : "Impossible de sauvegarder",
         variant: "destructive",
       })
     }
@@ -314,10 +241,7 @@ export default function CNAMApp() {
 
   const imprimer = async () => {
     try {
-      console.log("=== IMPRESSION DE TOUTES LES FACTURES NON GÉNÉRÉES ===")
-
-      // Récupérer toutes les factures non générées
-      const factures = await db.getFacturesNonGenerees()
+      const factures = await database.getFacturesNonGenerees()
 
       if (factures.length === 0) {
         toast({
@@ -327,49 +251,19 @@ export default function CNAMApp() {
         return
       }
 
-      console.log(
-        `${factures.length} factures non générées trouvées:`,
-        factures.map((f) => f.numfac),
-      )
+      await PrintService.printAllFactures(factures)
 
-      toast({
-        title: "Impression",
-        description: `Impression de ${factures.length} factures non générées...`,
-      })
-
-      // Imprimer chaque facture
-      for (let i = 0; i < factures.length; i++) {
-        const factureToprint = factures[i]
-        const montantEnLettres = convertirEnLettres(factureToprint.mnt)
-
-        console.log(`Impression facture ${i + 1}/${factures.length}: ${factureToprint.numfac}`)
-
-        // Délai entre les impressions pour éviter les conflits
-        if (i > 0) {
-          await new Promise((resolve) => setTimeout(resolve, 1000))
-        }
-
-        await PrintService.printFacture(factureToprint, montantEnLettres)
-
-        // Enregistrer l'action d'impression
-        await db.addHistorique("PRINT", "factures", factureToprint.id!, `Facture ${factureToprint.numfac} imprimée`)
-      }
-
-      // Marquer toutes les factures comme générées
       const factureIds = factures.map((f) => f.id!).filter((id) => id !== undefined)
-      await db.marquerFacturesCommeGenerees(factureIds)
+      await database.marquerFacturesCommeGenerees(factureIds)
 
-      // Recharger la liste
       await loadFacturesNonGenerees()
 
       toast({
         title: "Succès",
         description: `${factures.length} factures imprimées et marquées comme générées`,
       })
-
-      console.log("=== FIN IMPRESSION GROUPÉE ===")
     } catch (error) {
-      console.error("Erreur impression groupée:", error)
+      console.error("Print error:", error)
       toast({
         title: "Erreur",
         description: "Impossible d'imprimer les factures",
@@ -378,100 +272,95 @@ export default function CNAMApp() {
     }
   }
 
-  const imprimerBordereau = async () => {
-    try {
-      console.log("=== IMPRESSION BORDEREAU TOUTES FACTURES NON GÉNÉRÉES ===")
-
-      const factures = await db.getFacturesNonGenerees()
-
-      if (factures.length === 0) {
-        toast({
-          title: "Information",
-          description: "Aucune facture non générée pour le bordereau",
-        })
-        return
-      }
-
-      toast({
-        title: "Impression Bordereau",
-        description: `Génération du bordereau pour ${factures.length} factures...`,
-      })
-
-      // Données du bordereau pour toutes les factures non générées
-      const bordereauData = {
-        annee: new Date().getFullYear(),
-        numero: `BOR-${Date.now()}`,
-        dateGeneration: new Date(),
-        factures: factures.map((f) => ({
-          numfac: f.numfac,
-          nom: f.nom,
-          montant: f.mnt,
-          datfac: f.datfac,
-        })),
-        totalGeneral: factures.reduce((sum, f) => sum + f.mnt, 0),
-      }
-
-      console.log("Données bordereau:", bordereauData)
-      await PrintService.printBordereau(bordereauData)
-
-      toast({
-        title: "Succès",
-        description: `Bordereau pour ${factures.length} factures imprimé`,
-      })
-    } catch (error) {
-      console.error("Erreur impression bordereau:", error)
-      toast({
-        title: "Erreur",
-        description: "Impossible d'imprimer le bordereau",
-        variant: "destructive",
-      })
-    }
+  const formatDate = (date: Date): string => {
+    return date.toLocaleDateString("fr-FR", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+    })
   }
 
-  const handleQRScan = (data: string) => {
-    console.log("QR Code scanné:", data)
-
-    // Traiter les différents types de QR codes
-    if (data.startsWith("FACTURE:")) {
-      const factureId = data.replace("FACTURE:", "")
-      toast({
-        title: "QR Code détecté",
-        description: `Facture ID: ${factureId}`,
-      })
-    } else if (data.startsWith("PATIENT:")) {
-      const patientId = data.replace("PATIENT:", "")
-      setFacture((prev) => ({ ...prev, numass: patientId }))
-      toast({
-        title: "QR Code détecté",
-        description: `N° Patient: ${patientId} ajouté`,
-      })
-    } else if (data.startsWith("CNAM:")) {
-      const cnamData = data.replace("CNAM:", "")
-      toast({
-        title: "QR Code CNAM détecté",
-        description: `Données: ${cnamData}`,
-      })
-    } else {
-      toast({
-        title: "QR Code détecté",
-        description: data,
-      })
-    }
+  const convertirEnLettres = (montant: number): string => {
+    if (montant === 0) return "zéro"
+    const entier = Math.floor(montant)
+    const millimes = Math.round((montant - entier) * 1000)
+    let resultat = ""
+    if (entier > 0) resultat += `${entier} dinars`
+    if (millimes > 0) resultat += ` et ${millimes} millimes`
+    return resultat
   }
 
-  const nouvelleFacture = async () => {
-    try {
-      await prepareNextFacture()
-    } catch (error) {
-      console.error("Erreur nouvelle facture:", error)
-      toast({
-        title: "Erreur",
-        description: "Impossible de générer un nouveau numéro de facture",
-        variant: "destructive",
-      })
-    }
+  // États de chargement et d'erreur
+  if (appState === "loading") {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Card className="w-96">
+          <CardContent className="p-8 text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+            <h2 className="text-lg font-semibold mb-2">Initialisation...</h2>
+            <p className="text-gray-600">Connexion à Neon Database en cours</p>
+          </CardContent>
+        </Card>
+      </div>
+    )
   }
 
+  if (appState === "config_required") {
+    return (
+      <div className="min-h-screen bg-gray-50 p-4">
+        <div className="max-w-4xl mx-auto space-y-6">
+          <Card className="border-red-200 bg-red-50">
+            <CardHeader>
+              <div className="flex items-center gap-3">
+                <AlertTriangle className="h-6 w-6 text-red-600" />
+                <div>
+                  <CardTitle className="text-red-800">Configuration Neon Database Requise</CardTitle>
+                  <p className="text-red-600 text-sm mt-1">Impossible de se connecter à la base de données.</p>
+                </div>
+              </div>
+            </CardHeader>
+            <CardContent>
+              <div className="bg-red-100 p-3 rounded text-sm text-red-800">
+                <strong>Erreur:</strong> {initError}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Settings className="h-5 w-5" />
+                Configuration Neon Database
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <NeonConfig onConfigurationComplete={handleConfigurationComplete} />
+            </CardContent>
+          </Card>
+        </div>
+      </div>
+    )
+  }
+
+  if (appState === "error") {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center">
+        <Card className="w-96 border-red-200">
+          <CardContent className="p-8 text-center">
+            <AlertTriangle className="h-12 w-12 text-red-600 mx-auto mb-4" />
+            <h2 className="text-lg font-semibold mb-2 text-red-800">Erreur d'Initialisation</h2>
+            <p className="text-red-600 mb-4">{initError}</p>
+            <Button onClick={() => window.location.reload()} className="w-full">
+              <RotateCcw className="mr-2 h-4 w-4" />
+              Recharger la page
+            </Button>
+          </CardContent>
+        </Card>
+      </div>
+    )
+  }
+
+  // Interface principale
   return (
     <div className="min-h-screen bg-gray-50 p-4">
       <div className="max-w-7xl mx-auto space-y-6">
@@ -480,26 +369,20 @@ export default function CNAMApp() {
           <CardHeader>
             <div className="flex justify-between items-center">
               <CardTitle className="text-2xl font-bold text-center text-blue-600">
-                Application CNAM - Gestion des Factures
+                Application CNAM - Gestion des Factures (Neon Database)
               </CardTitle>
               <div className="flex gap-2">
                 <div className="text-sm text-gray-600 bg-yellow-50 px-3 py-1 rounded">
                   📋 {facturesNonGenerees.length} factures non générées
                 </div>
-                <Dialog open={showDatabaseManager} onOpenChange={setShowDatabaseManager}>
-                  <DialogTrigger asChild>
-                    <Button variant="outline">
-                      <Database className="mr-2 h-4 w-4" />
-                      Base de Données
-                    </Button>
-                  </DialogTrigger>
-                  <DialogContent className="max-w-6xl max-h-[90vh] overflow-y-auto">
-                    <DialogHeader>
-                      <DialogTitle>Gestionnaire de Base de Données</DialogTitle>
-                    </DialogHeader>
-                    <DatabaseManager />
-                  </DialogContent>
-                </Dialog>
+                <Button onClick={loadFacturesNonGenerees} variant="outline" size="sm">
+                  <RotateCcw className="mr-2 h-4 w-4" />
+                  Actualiser
+                </Button>
+                <Button onClick={() => setAppState("config_required")} variant="outline">
+                  <Settings className="mr-2 h-4 w-4" />
+                  Config Database
+                </Button>
               </div>
             </div>
           </CardHeader>
@@ -563,26 +446,13 @@ export default function CNAMApp() {
                 </div>
               </div>
 
-              {/* Numéro de facture et Scanner */}
-              <div className="flex items-center gap-4">
-                <div className="flex-1">
-                  <Label>Facture N°</Label>
-                  <div className="text-lg font-semibold p-2 bg-gray-100 rounded">
-                    {facture.numfac}
-                    {facture.id && (
-                      <span className="text-sm ml-2">
-                        <span className="text-green-600">(ID: {facture.id})</span>
-                        <span className={`ml-2 ${facture.generated === "0" ? "text-orange-600" : "text-blue-600"}`}>
-                          {facture.generated === "0" ? "Non généré" : "Généré"}
-                        </span>
-                      </span>
-                    )}
-                  </div>
+              {/* Numéro de facture */}
+              <div>
+                <Label>Facture N°</Label>
+                <div className="text-lg font-semibold p-2 bg-gray-100 rounded">
+                  {facture.numfac}
+                  {facture.id && <span className="text-sm ml-2 text-green-600">(ID: {facture.id})</span>}
                 </div>
-                <Button onClick={() => setShowQRScanner(true)} variant="outline" className="mt-6 bg-transparent">
-                  <QrCode className="mr-2 h-4 w-4" />
-                  Scan QR Code
-                </Button>
               </div>
 
               {/* Désignation */}
@@ -853,41 +723,23 @@ export default function CNAMApp() {
                 disabled={facturesNonGenerees.length === 0}
               >
                 <Printer className="mr-2 h-4 w-4" />
-                Imprimer Toutes ({facturesNonGenerees.length})
-              </Button>
-
-              <Button
-                onClick={imprimerBordereau}
-                variant="outline"
-                className="flex-1 max-w-xs bg-transparent"
-                disabled={facturesNonGenerees.length === 0}
-              >
-                <Printer className="mr-2 h-4 w-4" />
-                Bordereau Toutes ({facturesNonGenerees.length})
+                Imprimer & Générer ({facturesNonGenerees.length})
               </Button>
 
               <GenerateDialog facture={facture} />
 
-              <Button onClick={nouvelleFacture} variant="secondary" className="flex-1 max-w-xs">
+              <Button onClick={() => window.location.reload()} variant="secondary" className="flex-1 max-w-xs">
                 <Plus className="mr-2 h-4 w-4" />
                 Nouvelle Facture
               </Button>
             </div>
 
-            {/* Indicateur de statut */}
             <div className="text-center mt-4 space-y-2">
-              {facture.id ? (
-                <div className="text-sm text-green-600 font-medium">
-                  ✅ Facture {facture.numfac} sauvegardée (ID: {facture.id})
-                </div>
-              ) : (
-                <div className="text-sm text-orange-600 font-medium">
-                  ⚠️ Facture non sauvegardée - Enregistrer d'abord
-                </div>
-              )}
-
               <div className="text-sm text-blue-600">
                 📋 {facturesNonGenerees.length} factures en attente d'impression/génération
+              </div>
+              <div className="text-xs text-gray-500">
+                🐘 Base de données: Neon PostgreSQL • Statut: {isInitialized ? "✅ Connecté" : "❌ Déconnecté"}
               </div>
             </div>
           </CardContent>
@@ -895,7 +747,15 @@ export default function CNAMApp() {
       </div>
 
       {/* Scanner QR */}
-      {showQRScanner && <QRScanner onScan={handleQRScan} onClose={() => setShowQRScanner(false)} />}
+      {showQRScanner && (
+        <QRScanner
+          onScan={(data) => {
+            console.log("QR Code scanné:", data)
+            toast({ title: "QR Code détecté", description: data })
+          }}
+          onClose={() => setShowQRScanner(false)}
+        />
+      )}
     </div>
   )
 }
