@@ -13,7 +13,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { cn } from "@/lib/utils"
 import { useToast } from "@/hooks/use-toast"
 import { PrintService } from "@/print-service"
-import { GenerateDialog } from "@/generate-dialog"
+//import { GenerateDialog } from "@/generate-dialog"
 //import { QRScanner } from "@/qr-scanner"
 import { NeonConfig } from "@/neon-config"
 import { database, type Facture } from "@/lib/database"
