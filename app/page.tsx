@@ -17,7 +17,7 @@ import { PrintService } from "@/lib/print-service"
 import { GenerateDialog } from "@/components/generate-dialog"
 import { DatabaseManager } from "@/components/database-manager"
 import { QRScanner } from "@/components/qr-scanner"
-import { db, type Facture } from "@/lib/database"
+import { neon, type Facture } from "@/lib/database"
 
 export default function CNAMApp() {
   const { toast } = useToast()
