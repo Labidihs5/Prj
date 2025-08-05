@@ -1,10 +1,52 @@
 "use client"
 
-import { neon } from "@neondatabase/serverless"
+import { openDB, type DBSchema, type IDBPDatabase } from "idb"
 
-// Types
+// Schéma de la base de données
+interface CNAMDatabase extends DBSchema {
+  factures: {
+    key: number
+    value: Facture
+    indexes: {
+      "by-numfac": string
+      "by-date": Date
+      "by-patient": string
+      "by-status": string
+    }
+  }
+  borderaux: {
+    key: number
+    value: Bordereau
+    indexes: {
+      "by-numero": string
+      "by-annee": number
+      "by-date": Date
+    }
+  }
+  parametres: {
+    key: string
+    value: {
+      cle: string
+      valeur: any
+      dateModification: Date
+    }
+  }
+  historique: {
+    key: number
+    value: {
+      id?: number
+      action: "CREATE" | "UPDATE" | "DELETE" | "PRINT" | "EXPORT"
+      table: string
+      recordId: number
+      details: string
+      utilisateur: string
+      dateAction: Date
+    }
+  }
+}
+
 export interface Facture {
-  id?: string
+  id?: number
   nom: string
   designation: string
   nombreseance: number
@@ -24,474 +66,559 @@ export interface Facture {
   dfn: Date
   numfac: string
   annee: number
-  ind: string
-  generated: string
+  numbor?: string
+  annfac?: number
+  assiette?: string
+  ind: string // '0' = actif, '8' = supprimé
   dateCreation: Date
   dateModification: Date
 }
 
-export interface HistoriqueEntry {
-  id?: string
-  action: "CREATE" | "UPDATE" | "DELETE" | "PRINT" | "EXPORT" | "GENERATE"
-  table: string
-  recordId: string
-  details: string
-  utilisateur: string
-  dateAction: Date
+export interface Bordereau {
+  id?: number
+  annbor: number
+  numbor: string
+  assoc: string
+  bur: string
+  pres: string
+  numpac: string
+  assocs: string
+  nbrs: number
+  nbrg: number
+  mntg: number
+  mntht: number
+  tva: number
+  datfac: Date
+  dateCreation: Date
+  statut: "BROUILLON" | "VALIDE" | "TRANSMIS"
 }
 
-export interface DatabaseConfig {
-  connectionString: string
-  host?: string
-  database?: string
-  username?: string
-  password?: string
-  port?: number
-  ssl?: boolean
-}
-
-// Service de base de données Neon
-class NeonDatabaseService {
-  private sql: any = null
+class DatabaseService {
+  private db: IDBPDatabase<CNAMDatabase> | null = null
   private isInitialized = false
-  private initPromise: Promise<void> | null = null
-  private config: DatabaseConfig = {
-    connectionString:
-      "postgresql://neondb_owner:npg_6FgGQ3tMTnaR@ep-holy-frost-a23erwvq-pooler.eu-central-1.aws.neon.tech/prjcnam?sslmode=require&channel_binding=require",
-  }
 
-  // Réinitialiser le service
-  reset(): void {
-    this.sql = null
-    this.isInitialized = false
-    this.initPromise = null
-    console.log("🔄 Neon Database service reset")
-  }
-
-  // Initialiser la base de données - version simplifiée
-  async init(customConfig?: DatabaseConfig): Promise<void> {
-    // Si déjà initialisé, retourner immédiatement
-    if (this.isInitialized && this.sql) {
-      return
-    }
-
-    // Si une initialisation est en cours, attendre qu'elle se termine
-    if (this.initPromise) {
-      return this.initPromise
-    }
-
-    // Créer une nouvelle promesse d'initialisation
-    this.initPromise = this.performInit(customConfig)
+  // Initialiser la base de données
+  async init(): Promise<void> {
+    if (this.isInitialized) return
 
     try {
-      await this.initPromise
-    } finally {
-      this.initPromise = null
-    }
-  }
+      this.db = await openDB<CNAMDatabase>("CNAM_DB", 3, {
+        upgrade(db, oldVersion, newVersion, transaction) {
+          console.log(`Mise à jour DB de v${oldVersion} vers v${newVersion}`)
 
-  private async performInit(customConfig?: DatabaseConfig): Promise<void> {
-    try {
-      console.log("🔄 Starting Neon database initialization...")
+          // Table factures
+          if (!db.objectStoreNames.contains("factures")) {
+            const factureStore = db.createObjectStore("factures", {
+              keyPath: "id",
+              autoIncrement: true,
+            })
+            factureStore.createIndex("by-numfac", "numfac", { unique: true })
+            factureStore.createIndex("by-date", "datfac")
+            factureStore.createIndex("by-patient", "nom")
+            factureStore.createIndex("by-status", "ind")
+          }
 
-      // Configuration
-      if (customConfig) {
-        this.config = customConfig
-      } else {
-        const savedConfig = this.loadConfigFromStorage()
-        if (savedConfig) {
-          this.config = savedConfig
-        }
-      }
+          // Table borderaux
+          if (!db.objectStoreNames.contains("borderaux")) {
+            const bordereauStore = db.createObjectStore("borderaux", {
+              keyPath: "id",
+              autoIncrement: true,
+            })
+            bordereauStore.createIndex("by-numero", "numbor", { unique: true })
+            bordereauStore.createIndex("by-annee", "annbor")
+            bordereauStore.createIndex("by-date", "datfac")
+          }
 
-      if (!this.config.connectionString) {
-        throw new Error("Database connection string is required")
-      }
+          // Table paramètres
+          if (!db.objectStoreNames.contains("parametres")) {
+            db.createObjectStore("parametres", { keyPath: "cle" })
+          }
 
-      // Initialiser la connexion
-      this.sql = neon(this.config.connectionString)
+          // Table historique
+          if (!db.objectStoreNames.contains("historique")) {
+            const historiqueStore = db.createObjectStore("historique", {
+              keyPath: "id",
+              autoIncrement: true,
+            })
+          }
+        },
+      })
 
-      // Test de connexion simple
-      await this.sql`SELECT 1 as test`
-      console.log("✅ Database connection successful")
-
-      // Créer les tables
-      await this.createTables()
-
-      // Initialiser les paramètres
-      await this.initParameters()
-
+      await this.initializeDefaultData()
       this.isInitialized = true
-      this.saveConfigToStorage()
-
-      console.log("✅ Neon database initialized successfully")
+      console.log("Base de données CNAM initialisée avec succès")
     } catch (error) {
-      console.error("❌ Database initialization failed:", error)
-      this.isInitialized = false
-      this.sql = null
-
-      let errorMessage = "Database initialization failed"
-      if (error instanceof Error) {
-        errorMessage = error.message
-      }
-
-      throw new Error(errorMessage)
+      console.error("Erreur initialisation DB:", error)
+      throw new Error("Impossible d'initialiser la base de données")
     }
   }
 
-  // Tester la connexion
-  async testConnection(): Promise<boolean> {
+  // Initialiser les données par défaut
+  private async initializeDefaultData(): Promise<void> {
+    if (!this.db) return
+
     try {
-      if (!this.sql) {
-        this.sql = neon(this.config.connectionString)
-      }
-      await this.sql`SELECT 1 as test`
-      return true
-    } catch (error) {
-      console.error("Connection test failed:", error)
-      return false
-    }
-  }
-
-  // Créer les tables - version simplifiée
-  private async createTables(): Promise<void> {
-    try {
-      // Table des factures
-      await this.sql`
-        CREATE TABLE IF NOT EXISTS factures (
-          id SERIAL PRIMARY KEY,
-          nom TEXT NOT NULL,
-          designation TEXT DEFAULT '',
-          nombreseance INTEGER DEFAULT 0,
-          nombresemaine INTEGER DEFAULT 0,
-          nombre INTEGER DEFAULT 0,
-          puttc DECIMAL(10,3) DEFAULT 0,
-          mntht DECIMAL(10,3) DEFAULT 0,
-          mnttva DECIMAL(10,3) DEFAULT 0,
-          mnt DECIMAL(10,3) DEFAULT 0,
-          numass TEXT DEFAULT '',
-          annprc TEXT DEFAULT '',
-          numprc TEXT DEFAULT '',
-          burreg TEXT DEFAULT '',
-          cleass TEXT DEFAULT '',
-          datfac TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          ddeb TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          dfn TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          numfac TEXT UNIQUE NOT NULL,
-          annee INTEGER DEFAULT EXTRACT(YEAR FROM CURRENT_TIMESTAMP),
-          ind TEXT DEFAULT '0',
-          generated TEXT DEFAULT '0',
-          date_creation TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-          date_modification TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `
-
-      // Table des paramètres
-      await this.sql`
-        CREATE TABLE IF NOT EXISTS parametres (
-          id SERIAL PRIMARY KEY,
-          cle TEXT UNIQUE NOT NULL,
-          valeur TEXT DEFAULT '',
-          description TEXT DEFAULT '',
-          date_modification TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `
-
-      // Table de l'historique
-      await this.sql`
-        CREATE TABLE IF NOT EXISTS historique (
-          id SERIAL PRIMARY KEY,
-          action TEXT NOT NULL,
-          table_name TEXT NOT NULL,
-          record_id TEXT NOT NULL,
-          details TEXT DEFAULT '',
-          utilisateur TEXT DEFAULT 'system',
-          date_action TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-      `
-
-      console.log("✅ Database tables created")
-    } catch (error) {
-      console.error("❌ Error creating tables:", error)
-      throw error
-    }
-  }
-
-  // Initialiser les paramètres par défaut
-  private async initParameters(): Promise<void> {
-    try {
-      const params = [
-        { cle: "prixUnitaireTTC", valeur: "11.5" },
-        { cle: "bureauDefaut", valeur: "001" },
-        { cle: "dernierNumeroFacture", valeur: "0" },
+      // Paramètres par défaut
+      const parametresDefaut = [
+        { cle: "dernierNumFacture", valeur: 0, dateModification: new Date() },
+        { cle: "dernierNumBordereau", valeur: 0, dateModification: new Date() },
+        { cle: "tauxTVA", valeur: 0.07, dateModification: new Date() },
+        { cle: "prixUnitaireTTC", valeur: 11.5, dateModification: new Date() },
+        { cle: "bureauDefaut", valeur: "001", dateModification: new Date() },
+        { cle: "anneeEnCours", valeur: new Date().getFullYear(), dateModification: new Date() },
       ]
 
-      for (const param of params) {
-        const exists = await this.sql`
-          SELECT id FROM parametres WHERE cle = ${param.cle} LIMIT 1
-        `
-
-        if (exists.length === 0) {
-          await this.sql`
-            INSERT INTO parametres (cle, valeur) 
-            VALUES (${param.cle}, ${param.valeur})
-          `
+      const tx = this.db.transaction("parametres", "readwrite")
+      for (const param of parametresDefaut) {
+        const existing = await tx.store.get(param.cle)
+        if (!existing) {
+          await tx.store.add(param)
         }
       }
+      await tx.done
     } catch (error) {
-      console.error("Error initializing parameters:", error)
+      console.error("Erreur initialisation données par défaut:", error)
     }
   }
 
-  // Configuration
-  getCurrentConfig(): DatabaseConfig {
-    return { ...this.config }
-  }
-
-  async updateConfig(newConfig: DatabaseConfig): Promise<void> {
-    this.config = newConfig
-    this.reset()
-    await this.init(newConfig)
-  }
-
-  private saveConfigToStorage(): void {
-    try {
-      if (typeof window !== "undefined") {
-        localStorage.setItem("neon_db_config", JSON.stringify(this.config))
-      }
-    } catch (error) {
-      console.error("Error saving config:", error)
-    }
-  }
-
-  private loadConfigFromStorage(): DatabaseConfig | null {
-    try {
-      if (typeof window !== "undefined") {
-        const saved = localStorage.getItem("neon_db_config")
-        if (saved) {
-          return JSON.parse(saved)
-        }
-      }
-    } catch (error) {
-      console.error("Error loading config:", error)
-    }
-    return null
-  }
-
-  // === MÉTHODES PRINCIPALES ===
-
-  private async ensureInitialized(): Promise<void> {
-    if (!this.isInitialized) {
-      await this.init()
-    }
-  }
+  // === GESTION DES FACTURES ===
 
   async saveFacture(facture: Omit<Facture, "id" | "dateCreation" | "dateModification">): Promise<Facture> {
-    await this.ensureInitialized()
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
 
     try {
-      const result = await this.sql`
-        INSERT INTO factures (
-          nom, designation, nombreseance, nombresemaine, nombre, puttc, mntht, mnttva, mnt,
-          numass, annprc, numprc, burreg, cleass, datfac, ddeb, dfn, numfac, annee, ind, generated
-        ) VALUES (
-          ${facture.nom}, ${facture.designation}, ${facture.nombreseance}, ${facture.nombresemaine},
-          ${facture.nombre}, ${facture.puttc}, ${facture.mntht}, ${facture.mnttva}, ${facture.mnt},
-          ${facture.numass}, ${facture.annprc}, ${facture.numprc}, ${facture.burreg}, ${facture.cleass},
-          ${facture.datfac.toISOString()}, ${facture.ddeb.toISOString()}, ${facture.dfn.toISOString()},
-          ${facture.numfac}, ${facture.annee}, ${facture.ind}, ${facture.generated}
-        ) RETURNING *
-      `
-
-      const saved = result[0]
-      return {
+      const now = new Date()
+      const factureComplete: Facture = {
         ...facture,
-        id: saved.id.toString(),
-        dateCreation: new Date(saved.date_creation),
-        dateModification: new Date(saved.date_modification),
+        ind: facture.ind || "0",
+        dateCreation: now,
+        dateModification: now,
       }
+
+      const tx = this.db.transaction(["factures", "parametres"], "readwrite")
+
+      // Sauvegarder la facture
+      const id = await tx.objectStore("factures").add(factureComplete)
+      factureComplete.id = id as number
+
+      // Mettre à jour le dernier numéro de facture
+      const numFacture = Number.parseInt(facture.numfac.split("/")[0])
+      await tx.objectStore("parametres").put({
+        cle: "dernierNumFacture",
+        valeur: numFacture,
+        dateModification: now,
+      })
+
+      await tx.done
+
+      // Enregistrer dans l'historique
+      await this.addHistorique("CREATE", "factures", factureComplete.id, `Facture ${facture.numfac} créée`)
+
+      console.log("Facture sauvegardée:", factureComplete.id)
+      return factureComplete
     } catch (error) {
-      console.error("Error saving facture:", error)
-      throw new Error(
-        `Impossible de sauvegarder la facture: ${error instanceof Error ? error.message : "Erreur inconnue"}`,
-      )
+      console.error("Erreur sauvegarde facture:", error)
+      throw new Error("Impossible de sauvegarder la facture")
     }
   }
 
-  async getFacturesNonGenerees(): Promise<Facture[]> {
-    await this.ensureInitialized()
+  async updateFacture(facture: Facture): Promise<Facture> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
 
     try {
-      const result = await this.sql`
-        SELECT * FROM factures 
-        WHERE generated = '0' AND ind != '8'
-        ORDER BY date_creation ASC
-      `
+      const factureModifiee = {
+        ...facture,
+        dateModification: new Date(),
+      }
 
-      return result.map((row: any) => ({
-        id: row.id.toString(),
-        nom: row.nom || "",
-        designation: row.designation || "",
-        nombreseance: row.nombreseance || 0,
-        nombresemaine: row.nombresemaine || 0,
-        nombre: row.nombre || 0,
-        puttc: Number.parseFloat(row.puttc) || 0,
-        mntht: Number.parseFloat(row.mntht) || 0,
-        mnttva: Number.parseFloat(row.mnttva) || 0,
-        mnt: Number.parseFloat(row.mnt) || 0,
-        numass: row.numass || "",
-        annprc: row.annprc || "",
-        numprc: row.numprc || "",
-        burreg: row.burreg || "",
-        cleass: row.cleass || "",
-        datfac: new Date(row.datfac),
-        ddeb: new Date(row.ddeb),
-        dfn: new Date(row.dfn),
-        numfac: row.numfac,
-        annee: row.annee || new Date().getFullYear(),
-        ind: row.ind || "0",
-        generated: row.generated || "0",
-        dateCreation: new Date(row.date_creation),
-        dateModification: new Date(row.date_modification),
-      }))
+      const tx = this.db.transaction("factures", "readwrite")
+      await tx.store.put(factureModifiee)
+      await tx.done
+
+      await this.addHistorique("UPDATE", "factures", facture.id!, `Facture ${facture.numfac} modifiée`)
+
+      return factureModifiee
     } catch (error) {
-      console.error("Error getting factures:", error)
+      console.error("Erreur modification facture:", error)
+      throw new Error("Impossible de modifier la facture")
+    }
+  }
+
+  async deleteFacture(id: number): Promise<boolean> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const tx = this.db.transaction("factures", "readwrite")
+      const facture = await tx.store.get(id)
+
+      if (facture) {
+        // Marquer comme supprimé au lieu de supprimer physiquement
+        facture.ind = "8"
+        facture.dateModification = new Date()
+        await tx.store.put(facture)
+        await tx.done
+
+        await this.addHistorique("DELETE", "factures", id, `Facture ${facture.numfac} supprimée`)
+        return true
+      }
+      return false
+    } catch (error) {
+      console.error("Erreur suppression facture:", error)
+      throw new Error("Impossible de supprimer la facture")
+    }
+  }
+
+  async getFactures(includeDeleted = false): Promise<Facture[]> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const tx = this.db.transaction("factures", "readonly")
+      const factures = await tx.store.getAll()
+      await tx.done
+
+      return includeDeleted ? factures : factures.filter((f) => f.ind !== "8")
+    } catch (error) {
+      console.error("Erreur récupération factures:", error)
       return []
     }
   }
 
-  async getNextFactureNumber(): Promise<string> {
-    await this.ensureInitialized()
+  async getFactureById(id: number): Promise<Facture | null> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
 
     try {
-      const result = await this.sql`
-        SELECT valeur FROM parametres WHERE cle = 'dernierNumeroFacture' LIMIT 1
-      `
-
-      const lastNumber = result.length > 0 ? Number.parseInt(result[0].valeur) || 0 : 0
-      const nextNumber = lastNumber + 1
-      const currentYear = new Date().getFullYear()
-
-      return `${nextNumber}/${currentYear}`
+      const tx = this.db.transaction("factures", "readonly")
+      const facture = await tx.store.get(id)
+      await tx.done
+      return facture || null
     } catch (error) {
-      console.error("Error getting next number:", error)
-      return `1/${new Date().getFullYear()}`
-    }
-  }
-
-  async reserveFactureNumber(): Promise<string> {
-    await this.ensureInitialized()
-
-    try {
-      const result = await this.sql`
-        SELECT valeur FROM parametres WHERE cle = 'dernierNumeroFacture' LIMIT 1
-      `
-
-      const currentNumber = result.length > 0 ? Number.parseInt(result[0].valeur) || 0 : 0
-      const nextNumber = currentNumber + 1
-
-      await this.sql`
-        UPDATE parametres SET valeur = ${nextNumber.toString()}
-        WHERE cle = 'dernierNumeroFacture'
-      `
-
-      const currentYear = new Date().getFullYear()
-      return `${nextNumber}/${currentYear}`
-    } catch (error) {
-      console.error("Error reserving number:", error)
-      throw new Error("Impossible de réserver un numéro de facture")
-    }
-  }
-
-  async getParametre(cle: string): Promise<string | null> {
-    await this.ensureInitialized()
-
-    try {
-      const result = await this.sql`
-        SELECT valeur FROM parametres WHERE cle = ${cle} LIMIT 1
-      `
-      return result.length > 0 ? result[0].valeur : null
-    } catch (error) {
-      console.error("Error getting parameter:", error)
+      console.error("Erreur récupération facture:", error)
       return null
     }
   }
 
-  async setParametre(cle: string, valeur: string): Promise<void> {
-    await this.ensureInitialized()
+  async getFactureByNumero(numfac: string): Promise<Facture | null> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
 
     try {
-      const exists = await this.sql`
-        SELECT id FROM parametres WHERE cle = ${cle} LIMIT 1
-      `
-
-      if (exists.length > 0) {
-        await this.sql`
-          UPDATE parametres SET valeur = ${valeur} WHERE cle = ${cle}
-        `
-      } else {
-        await this.sql`
-          INSERT INTO parametres (cle, valeur) VALUES (${cle}, ${valeur})
-        `
-      }
+      const tx = this.db.transaction("factures", "readonly")
+      const facture = await tx.store.index("by-numfac").get(numfac)
+      await tx.done
+      return facture || null
     } catch (error) {
-      console.error("Error setting parameter:", error)
+      console.error("Erreur recherche facture par numéro:", error)
+      return null
+    }
+  }
+
+  async searchFactures(criteres: {
+    nom?: string
+    dateDebut?: Date
+    dateFin?: Date
+    bureau?: string
+    statut?: string
+  }): Promise<Facture[]> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      let factures = await this.getFactures()
+
+      // Filtrer selon les critères
+      if (criteres.nom) {
+        factures = factures.filter((f) => f.nom.toLowerCase().includes(criteres.nom!.toLowerCase()))
+      }
+
+      if (criteres.dateDebut) {
+        factures = factures.filter((f) => f.datfac >= criteres.dateDebut!)
+      }
+
+      if (criteres.dateFin) {
+        factures = factures.filter((f) => f.datfac <= criteres.dateFin!)
+      }
+
+      if (criteres.bureau) {
+        factures = factures.filter((f) => f.burreg === criteres.bureau)
+      }
+
+      if (criteres.statut) {
+        factures = factures.filter((f) => f.ind === criteres.statut)
+      }
+
+      return factures
+    } catch (error) {
+      console.error("Erreur recherche factures:", error)
+      return []
+    }
+  }
+
+  // === GESTION DES BORDERAUX ===
+
+  async saveBordereau(bordereau: Omit<Bordereau, "id" | "dateCreation">): Promise<Bordereau> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const bordereauComplet: Bordereau = {
+        ...bordereau,
+        dateCreation: new Date(),
+      }
+
+      const tx = this.db.transaction("borderaux", "readwrite")
+      const id = await tx.store.add(bordereauComplet)
+      bordereauComplet.id = id as number
+      await tx.done
+
+      await this.addHistorique("CREATE", "borderaux", bordereauComplet.id, `Bordereau ${bordereau.numbor} créé`)
+
+      return bordereauComplet
+    } catch (error) {
+      console.error("Erreur sauvegarde bordereau:", error)
+      throw new Error("Impossible de sauvegarder le bordereau")
+    }
+  }
+
+  async getBorderaux(): Promise<Bordereau[]> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const tx = this.db.transaction("borderaux", "readonly")
+      const borderaux = await tx.store.getAll()
+      await tx.done
+      return borderaux
+    } catch (error) {
+      console.error("Erreur récupération borderaux:", error)
+      return []
+    }
+  }
+
+  // === GESTION DES PARAMÈTRES ===
+
+  async getParametre(cle: string): Promise<any> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const tx = this.db.transaction("parametres", "readonly")
+      const param = await tx.store.get(cle)
+      await tx.done
+      return param?.valeur
+    } catch (error) {
+      console.error("Erreur récupération paramètre:", error)
+      return null
+    }
+  }
+
+  async setParametre(cle: string, valeur: any): Promise<void> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const tx = this.db.transaction("parametres", "readwrite")
+      await tx.store.put({
+        cle,
+        valeur,
+        dateModification: new Date(),
+      })
+      await tx.done
+    } catch (error) {
+      console.error("Erreur sauvegarde paramètre:", error)
       throw new Error("Impossible de sauvegarder le paramètre")
     }
   }
 
-  async marquerFacturesCommeGenerees(factureIds: string[]): Promise<void> {
-    await this.ensureInitialized()
+  async getNextFactureNumber(): Promise<string> {
+    const dernierNum = (await this.getParametre("dernierNumFacture")) || 0
+    const annee = new Date().getFullYear()
+    return `${dernierNum + 1}/${annee}`
+  }
+
+  async getNextBordereauNumber(): Promise<string> {
+    const dernierNum = (await this.getParametre("dernierNumBordereau")) || 0
+    const annee = new Date().getFullYear()
+    return `BOR${String(dernierNum + 1).padStart(3, "0")}/${annee}`
+  }
+
+  // === HISTORIQUE ===
+
+  private async addHistorique(
+    action: "CREATE" | "UPDATE" | "DELETE" | "PRINT" | "EXPORT",
+    table: string,
+    recordId: number,
+    details: string,
+  ): Promise<void> {
+    if (!this.db) return
 
     try {
-      for (const id of factureIds) {
-        await this.sql`
-          UPDATE factures SET generated = '1' WHERE id = ${id}
-        `
-      }
+      const tx = this.db.transaction("historique", "readwrite")
+      await tx.store.add({
+        action,
+        table,
+        recordId,
+        details,
+        utilisateur: "Utilisateur", // À remplacer par le vrai utilisateur
+        dateAction: new Date(),
+      })
+      await tx.done
     } catch (error) {
-      console.error("Error marking factures:", error)
-      throw new Error("Impossible de marquer les factures comme générées")
+      console.error("Erreur ajout historique:", error)
     }
   }
 
-  // Méthodes simplifiées pour éviter les boucles
-  async updateFacture(facture: Facture): Promise<Facture> {
-    await this.ensureInitialized()
-    // Implementation simplifiée
-    return facture
+  async getHistorique(limit = 100): Promise<any[]> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const tx = this.db.transaction("historique", "readonly")
+      const historique = await tx.store.getAll()
+      await tx.done
+
+      return historique.sort((a, b) => b.dateAction.getTime() - a.dateAction.getTime()).slice(0, limit)
+    } catch (error) {
+      console.error("Erreur récupération historique:", error)
+      return []
+    }
   }
 
-  async getFactures(): Promise<Facture[]> {
-    await this.ensureInitialized()
-    return []
-  }
+  // === STATISTIQUES ===
 
-  async addHistorique(): Promise<void> {
-    // Méthode vide pour éviter les erreurs
-  }
+  async getStatistiques(): Promise<{
+    totalFactures: number
+    totalMontant: number
+    facturesAujourdhui: number
+    facturesCeMois: number
+    moyenneMensuelle: number
+  }> {
+    await this.init()
+    const factures = await this.getFactures()
 
-  async getStatistiques() {
-    await this.ensureInitialized()
+    const aujourd = new Date()
+    const debutMois = new Date(aujourd.getFullYear(), aujourd.getMonth(), 1)
+
+    const facturesAujourdhui = factures.filter((f) => f.datfac.toDateString() === aujourd.toDateString()).length
+
+    const facturesCeMois = factures.filter((f) => f.datfac >= debutMois).length
+
+    const totalMontant = factures.reduce((sum, f) => sum + f.mnt, 0)
+
     return {
-      totalFactures: 0,
-      totalMontant: 0,
-      facturesAujourdhui: 0,
-      facturesCeMois: 0,
-      moyenneMensuelle: 0,
-      facturesNonGenerees: 0,
+      totalFactures: factures.length,
+      totalMontant,
+      facturesAujourdhui,
+      facturesCeMois,
+      moyenneMensuelle: facturesCeMois / aujourd.getDate(),
     }
   }
+
+  // === SAUVEGARDE/RESTAURATION ===
 
   async exportDatabase(): Promise<string> {
-    return JSON.stringify({ message: "Export not implemented" })
+    await this.init()
+
+    const factures = await this.getFactures(true)
+    const borderaux = await this.getBorderaux()
+    const historique = await this.getHistorique(1000)
+
+    const exportData = {
+      version: "1.0",
+      dateExport: new Date().toISOString(),
+      factures: factures.map((f) => ({
+        ...f,
+        datfac: f.datfac.toISOString(),
+        ddeb: f.ddeb.toISOString(),
+        dfn: f.dfn.toISOString(),
+        dateCreation: f.dateCreation.toISOString(),
+        dateModification: f.dateModification.toISOString(),
+      })),
+      borderaux: borderaux.map((b) => ({
+        ...b,
+        datfac: b.datfac.toISOString(),
+        dateCreation: b.dateCreation.toISOString(),
+      })),
+      historique: historique.map((h) => ({
+        ...h,
+        dateAction: h.dateAction.toISOString(),
+      })),
+    }
+
+    return JSON.stringify(exportData, null, 2)
   }
 
+  async importDatabase(jsonData: string): Promise<void> {
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const data = JSON.parse(jsonData)
+
+      // Vider les tables existantes
+      const tx = this.db.transaction(["factures", "borderaux", "historique"], "readwrite")
+      await tx.objectStore("factures").clear()
+      await tx.objectStore("borderaux").clear()
+      await tx.objectStore("historique").clear()
+
+      // Importer les factures
+      for (const facture of data.factures) {
+        await tx.objectStore("factures").add({
+          ...facture,
+          datfac: new Date(facture.datfac),
+          ddeb: new Date(facture.ddeb),
+          dfn: new Date(facture.dfn),
+          dateCreation: new Date(facture.dateCreation),
+          dateModification: new Date(facture.dateModification),
+        })
+      }
+
+      // Importer les borderaux
+      for (const bordereau of data.borderaux) {
+        await tx.objectStore("borderaux").add({
+          ...bordereau,
+          datfac: new Date(bordereau.datfac),
+          dateCreation: new Date(bordereau.dateCreation),
+        })
+      }
+
+      await tx.done
+      console.log("Base de données importée avec succès")
+    } catch (error) {
+      console.error("Erreur import base de données:", error)
+      throw new Error("Impossible d'importer la base de données")
+    }
+  }
+
+  // === NETTOYAGE ===
+
   async clearDatabase(): Promise<void> {
-    await this.ensureInitialized()
-    await this.sql`DELETE FROM factures`
+    await this.init()
+    if (!this.db) throw new Error("Base de données non initialisée")
+
+    try {
+      const tx = this.db.transaction(["factures", "borderaux", "historique"], "readwrite")
+      await tx.objectStore("factures").clear()
+      await tx.objectStore("borderaux").clear()
+      await tx.objectStore("historique").clear()
+      await tx.done
+
+      console.log("Base de données vidée")
+    } catch (error) {
+      console.error("Erreur nettoyage base de données:", error)
+      throw new Error("Impossible de vider la base de données")
+    }
   }
 }
 
 // Instance singleton
-export const database = new NeonDatabaseService()
+export const db = new DatabaseService()
+
+// Initialiser automatiquement
+if (typeof window !== "undefined") {
+  db.init().catch(console.error)
+}

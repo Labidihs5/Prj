@@ -51,7 +51,7 @@
     "date-fns": "^2.30.0",
     "embla-carousel-react": "latest",
     "geist": "latest",
-    "idb": "^8.0.0",
+    "idb": "latest",
     "input-otp": "latest",
     "jspdf": "^2.5.1",
     "lucide-react": "^0.454.0",
