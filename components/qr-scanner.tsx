@@ -13,7 +13,7 @@ interface QRScannerProps {
 export function QRScanner({ onScan, onClose }: QRScannerProps) {
   const videoRef = useRef<HTMLVideoElement>(null)
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [isScanning, setIsScanning] = useState(true)
+  const [isScanning, setIsScanning] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [hasFlash, setHasFlash] = useState(false)
   const [flashOn, setFlashOn] = useState(false)
