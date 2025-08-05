@@ -126,7 +126,7 @@ importers:
         specifier: latest
         version: 1.4.2(next@15.2.4(react-dom@19.0.0(react@19.0.0))(react@19.0.0))
       idb:
-        specifier: ^8.0.0
+        specifier: latest
         version: 8.0.3
       input-otp:
         specifier: latest
